@@ -48,6 +48,44 @@ if (!OPENROUTER_CONFIG.apiKey) {
   console.error("Please set OPENROUTER_API_KEY to use the OpenRouter MCP server.");
 }
 
+// Type for OpenRouter message with optional reasoning content (DeepSeek models)
+interface OpenRouterMessage {
+  role: string;
+  content: string | null | Array<{ type: string; text?: string }>;
+  reasoning_content?: string;
+  tool_calls?: unknown[];
+}
+
+// Extract text content from various message formats
+function extractMessageContent(message: OpenRouterMessage): {
+  content: string | null;
+  reasoning: string | null;
+} {
+  let content: string | null = null;
+  let reasoning: string | null = null;
+
+  // Handle reasoning_content (DeepSeek reasoning models)
+  if (message.reasoning_content && typeof message.reasoning_content === "string") {
+    reasoning = message.reasoning_content;
+  }
+
+  // Handle content field
+  if (message.content === null || message.content === undefined) {
+    content = null;
+  } else if (typeof message.content === "string") {
+    content = message.content;
+  } else if (Array.isArray(message.content)) {
+    // Handle array of content parts (e.g., [{type: "text", text: "..."}])
+    const textParts = message.content
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+    content = textParts || null;
+  }
+
+  return { content, reasoning };
+}
+
 class OpenRouterMCPServer {
   private server: Server;
 
@@ -347,14 +385,23 @@ class OpenRouterMCPServer {
       { headers: OPENROUTER_CONFIG.headers }
     );
 
-    const result = response.data.choices[0].message.content;
+    const assistantMessage = response.data.choices[0].message as OpenRouterMessage;
+    const { content: result, reasoning } = extractMessageContent(assistantMessage);
     const usage = response.data.usage;
+
+    // Build response text
+    let responseText = `**Model:** ${model}\n`;
+    if (reasoning) {
+      responseText += `**Reasoning:**\n${reasoning}\n\n`;
+    }
+    responseText += `**Response:** ${result ?? "(no content returned)"}\n\n`;
+    responseText += `**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
 
     return {
       content: [
         {
           type: "text" as const,
-          text: `**Model:** ${model}\n**Response:** ${result}\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`,
+          text: responseText,
         },
       ],
     };
@@ -375,9 +422,12 @@ class OpenRouterMCPServer {
           { headers: OPENROUTER_CONFIG.headers }
         );
 
+        const msg = response.data.choices[0].message as OpenRouterMessage;
+        const { content: extracted, reasoning } = extractMessageContent(msg);
         return {
           model,
-          response: response.data.choices[0].message.content,
+          response: extracted,
+          reasoning,
           usage: response.data.usage,
           success: true,
         };
@@ -395,7 +445,12 @@ class OpenRouterMCPServer {
     const formattedResults = results
       .map((result) => {
         if (result.success) {
-          return `**${result.model}:**\n${result.response}\n*Tokens: ${result.usage.total_tokens}*`;
+          let text = `**${result.model}:**\n`;
+          if (result.reasoning) {
+            text += `*Reasoning:* ${result.reasoning.slice(0, 200)}${result.reasoning.length > 200 ? "..." : ""}\n\n`;
+          }
+          text += `${result.response ?? "(no content)"}\n*Tokens: ${result.usage.total_tokens}*`;
+          return text;
         } else {
           return `**${result.model}:** ❌ Error - ${result.error}`;
         }
