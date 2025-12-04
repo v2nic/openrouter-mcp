@@ -6,7 +6,7 @@ A Model Context Protocol (MCP) server that provides access to OpenRouter's exten
 
 - 🤖 Access to 400+ language models including GPT-4, Claude, Gemini, Llama, and more
 - 🔍 List and search available models with pricing information
-- 💬 Chat with any model through a unified interface
+- 💬 Chat with any model through a unified interface (including models that return reasoning content such as DeepSeek)
 - 🔄 Compare responses from multiple models side-by-side
 - 📊 Get detailed model information including context limits and capabilities
 - 🔧 Seamless integration with Claude Desktop and Claude Code
@@ -107,6 +107,9 @@ npm test
 
 # Lint code
 npm run lint
+
+# Format code
+npm run format
 
 # Type check
 npm run typecheck
