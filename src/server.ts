@@ -86,6 +86,33 @@ function extractMessageContent(message: OpenRouterMessage): {
   return { content, reasoning };
 }
 
+// Exponential backoff utility for retrying rate-limited requests
+async function retryWithBackoff<T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      // Check if it's a rate limit error (429) or payment required (402) for free models
+      const isRetryableError = error.response?.status === 429 || error.response?.status === 402;
+      
+      if (isRetryableError && attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+        const errorType = error.response?.status === 429 ? 'Rate limited' : 'Payment required (free model limit)';
+        console.error(`${errorType} (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${Math.round(delay)}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      // Re-throw non-retryable errors or if we've exhausted retries
+      throw error;
+    }
+  }
+  throw new Error("Max retries exceeded");
+}
+
 class OpenRouterMCPServer {
   private server: Server;
 
@@ -368,22 +395,24 @@ class OpenRouterMCPServer {
   private async chatWithModel(params: z.infer<typeof ChatRequestSchema>) {
     const { model, message, max_tokens, temperature, system_prompt } = params;
 
-    const messages = [];
+    const messages: Array<{role: string; content: string}> = [];
     if (system_prompt) {
       messages.push({ role: "system", content: system_prompt });
     }
     messages.push({ role: "user", content: message });
 
-    const response = await axios.post(
-      `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
-      {
-        model,
-        messages,
-        max_tokens,
-        temperature,
-      },
-      { headers: OPENROUTER_CONFIG.headers }
-    );
+    const response = await retryWithBackoff(async () => {
+      return await axios.post(
+        `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
+        {
+          model,
+          messages,
+          max_tokens,
+          temperature,
+        },
+        { headers: OPENROUTER_CONFIG.headers }
+      );
+    });
 
     const assistantMessage = response.data.choices[0].message as OpenRouterMessage;
     const { content: result, reasoning } = extractMessageContent(assistantMessage);
@@ -412,15 +441,19 @@ class OpenRouterMCPServer {
 
     const promises = models.map(async (model) => {
       try {
-        const response = await axios.post(
-          `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
-          {
-            model,
-            messages: [{ role: "user", content: message }],
-            max_tokens,
-          },
-          { headers: OPENROUTER_CONFIG.headers }
-        );
+        const messages: Array<{role: string; content: string}> = [{ role: "user", content: message }];
+        
+        const response = await retryWithBackoff(async () => {
+          return await axios.post(
+            `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
+            {
+              model,
+              messages,
+              max_tokens,
+            },
+            { headers: OPENROUTER_CONFIG.headers }
+          );
+        });
 
         const msg = response.data.choices[0].message as OpenRouterMessage;
         const { content: extracted, reasoning } = extractMessageContent(msg);
